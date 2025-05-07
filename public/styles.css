@@ -1,0 +1,111 @@
+.terminal-container {
+    width: 90%;
+    max-width: 1200px;
+    margin: 20px auto;
+    font-family: 'Courier New', monospace;
+    background: #1e1e1e;
+    border-radius: 8px;
+    box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+    overflow: hidden;
+}
+
+.terminal-header {
+    background: #323232;
+    padding: 10px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.window-controls {
+    display: flex;
+    gap: 8px;
+    margin-right: 20px;
+}
+
+.window-control {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+}
+
+.close { background: #ff5f56; }
+.minimize { background: #ffbd2e; }
+.maximize { background: #27c93f; }
+
+.terminal-tabs {
+    display: flex;
+    gap: 2px;
+    flex-grow: 1;
+}
+
+.terminal-tab {
+    padding: 8px 16px;
+    background: #252525;
+    color: #fff;
+    border: none;
+    cursor: pointer;
+    border-radius: 4px 4px 0 0;
+    transition: background 0.3s;
+}
+
+.terminal-tab.active {
+    background: #1e1e1e;
+}
+
+.terminal-tab:hover:not(.active) {
+    background: #2a2a2a;
+}
+
+.terminal-content {
+    padding: 20px;
+    height: 500px;
+    overflow-y: auto;
+    color: #fff;
+}
+
+.log-entry {
+    margin-bottom: 10px;
+    padding: 5px;
+    border-radius: 4px;
+}
+
+.log-timestamp {
+    color: #888;
+}
+
+.log-level {
+    display: inline-block;
+    padding: 2px 6px;
+    border-radius: 3px;
+    margin: 0 8px;
+}
+
+.log-level-SUCCESS { background: #27c93f; }
+.log-level-ERROR { background: #ff5f56; }
+.log-level-INFO { background: #0099ff; }
+
+.log-message {
+    color: #fff;
+}
+
+.log-details {
+    margin-top: 5px;
+    padding-left: 20px;
+    color: #888;
+    font-size: 0.9em;
+}
+
+/* Scrollbar styling */
+.terminal-content::-webkit-scrollbar {
+    width: 8px;
+}
+
+.terminal-content::-webkit-scrollbar-track {
+    background: #1e1e1e;
+}
+
+.terminal-content::-webkit-scrollbar-thumb {
+    background: #888;
+    border-radius: 4px;
+} 

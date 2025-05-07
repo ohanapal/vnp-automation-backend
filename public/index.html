@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Terminal Logs</title>
+    <link rel="stylesheet" href="styles.css" />
+    <script src="/socket.io/socket.io.js"></script>
+  </head>
+  <body style="background: #2d2d2d">
+    <button id="start-button">Login with email</button>
+    <div class="terminal-container">
+      <div class="terminal-header">
+        <div class="window-controls">
+          <div class="window-control close"></div>
+          <div class="window-control minimize"></div>
+          <div class="window-control maximize"></div>
+        </div>
+        <div class="terminal-tabs">
+          <button class="terminal-tab active" data-tab="all">All Logs</button>
+        </div>
+      </div>
+      <div class="terminal-content" id="logContent">
+        <!-- Logs will be inserted here -->
+      </div>
+    </div>
+    <script>
+      // Initialize Socket.IO connection with the correct URL
+      const socket = io(window.location.origin);
+      let allLogs = [];
+
+      document.getElementById("start-button").addEventListener("click", () => {
+        socket.emit("start");
+      });
+      // Function to display logs
+      function displayLogs(logs, filter = "all") {
+        const logContent = document.getElementById("logContent");
+
+        // Filter logs based on selected tab
+        const filteredLogs =
+          filter === "all"
+            ? logs
+            : logs.filter((log) => log.level.toLowerCase() === filter);
+
+        logContent.innerHTML = filteredLogs
+          .map(
+            (log) => `
+                <div class="log-entry">
+                    <span class="log-timestamp">[${new Date(
+                      log.timestamp
+                    ).toLocaleString()}]</span>
+                    <span class="log-level log-level-${log.level.toLowerCase()}">${
+              log.level
+            }</span>
+                    <span class="log-message">${log.message}</span>
+                    ${
+                      log.data
+                        ? `
+                        <div class="log-details">
+                            <pre>${JSON.stringify(log.data, null, 2)}</pre>
+                        </div>
+                    `
+                        : ""
+                    }
+                </div>
+            `
+          )
+          .join("");
+
+        // Scroll to bottom after content is updated
+        logContent.scrollTop = logContent.scrollHeight;
+      }
+
+      // Tab switching logic
+      document.querySelectorAll(".terminal-tab").forEach((tab) => {
+        tab.addEventListener("click", () => {
+          // Update active tab
+          document
+            .querySelector(".terminal-tab.active")
+            .classList.remove("active");
+          tab.classList.add("active");
+
+          // Display filtered logs
+          displayLogs(allLogs, tab.dataset.tab);
+        });
+      });
+
+      // Socket.IO event handlers
+      socket.on("connect", () => {
+        console.log("Connected to server");
+        // Fetch initial data
+        fetch("/api/data")
+          .then((response) => response.json())
+          .then((data) => {
+            allLogs = data.logs;
+            displayLogs(allLogs);
+          })
+          .catch((error) =>
+            console.error("Error fetching initial data:", error)
+          );
+      });
+
+      socket.on("update", (data) => {
+        allLogs = data.logs;
+        const activeTab = document.querySelector(".terminal-tab.active");
+        displayLogs(allLogs, activeTab.dataset.tab);
+      });
+
+      socket.on("disconnect", () => {
+        console.log("Disconnected from server");
+      });
+
+      // Initial load
+      fetch("http://localhost:3000/api/data")
+        .then((response) => response.json())
+        .then((data) => {
+          allLogs = data.logs;
+          displayLogs(allLogs);
+        })
+        .catch((error) => console.error("Error fetching initial data:", error));
+    </script>
+  </body>
+</html>
