@@ -55,7 +55,7 @@ let verificationCode = "";
 
 const getDataFromSheet = () => {
   try {
-    const workbook = xlsx.readFile("VNP_sheet.xlsx");
+    const workbook = xlsx.readFile("testing-1.xlsx");
     const sheetName = workbook.SheetNames[0];
     const sheet = workbook.Sheets[sheetName];
     const sheetData = xlsx.utils.sheet_to_json(sheet, { defval: "" });
@@ -72,19 +72,19 @@ const getDataFromSheet = () => {
     let cnt = 0;
 
     for (const item of sheetData) {
-      if (!item["Property Name"]) {
-        console.warn("Skipping row with no Property Name:", item);
+      if (!item["Property ID"]) {
+        console.warn("Skipping row with no Property ID:", item);
         continue;
       }
 
-      if (!hashMap[item["Property Name"]]) {
-        hashMap[item["Property Name"]] = ++cnt;
+      if (!hashMap[item["Property ID"]]) {
+        hashMap[item["Property ID"]] = ++cnt;
         hotels.push({
-          name: item["Property Name"],
+          id: item["Property ID"],
           idList: [item["Reservation ID"]],
         });
       } else {
-        hotels[hashMap[item["Property Name"]] - 1].idList.push(
+        hotels[hashMap[item["Property ID"]] - 1].idList.push(
           item["Reservation ID"]
         );
       }
@@ -443,7 +443,7 @@ async function loginToExpediaPartner(
     const allReservations = [];
 
     for (const item of sheetData) {
-      const propertyName = item.name;
+      const propertyName = item.id;
 
       if (propertyName) {
         // Wait for property table to load
@@ -457,13 +457,13 @@ async function loginToExpediaPartner(
           ".all-properties__search input.fds-field-input"
         );
 
-        // Get property name from query params
-        logger.info(`Searching for property: ${propertyName}`);
+        // Get property ID from query params
+        logger.info(`Searching for property ID: ${propertyName}`);
 
-        // Type property name in search
+        // Type property ID in search
         await page.type(
           ".all-properties__search input.fds-field-input",
-          propertyName,
+          String(propertyName),
           { delay: 500 }
         );
 
@@ -478,37 +478,37 @@ async function loginToExpediaPartner(
             timeout: 10000,
           });
 
-          // More specific selector for the property link
-          const propertySelector = `.property-cell__property-name`;
-
-          const propertyLink = await page.waitForSelector(propertySelector, {
-            visible: true,
-            timeout: 10000,
-          });
-
-          if (propertyLink) {
-            // Get the text to verify it's the right property
-            const linkText = await page.evaluate(
-              (el) => el.textContent,
-              propertyLink
-            );
-            logger.info(`Found property: ${linkText}, clicking...`);
-
-            try {
-              // Click the link and wait for navigation
-              await Promise.all([
-                page.waitForNavigation({
-                  waitUntil: "networkidle0",
-                  timeout: 30000,
-                }),
-                propertyLink.click(),
-              ]);
-
-              // Wait for the new page to load
-              await delay(8000);
-            } catch (error) {
-              console.error(error.message);
+          // Find and click the property link
+          const clicked = await page.evaluate((searchId) => {
+            const rows = Array.from(document.querySelectorAll('tbody tr'));
+            for (const row of rows) {
+              const idElement = row.querySelector('.property-cell__property-id span');
+              if (idElement && idElement.textContent.includes(searchId)) {
+                const link = row.querySelector('.property-cell__property-name a');
+                if (link) {
+                  link.click();
+                  return true;
+                }
+              }
             }
+            return false;
+          }, String(propertyName));
+
+          if (clicked) {
+            logger.info(`Found and clicked property with ID: ${propertyName}`);
+            
+            // Wait for navigation
+            await Promise.all([
+              page.waitForNavigation({
+                waitUntil: "networkidle0",
+                timeout: 30000,
+              }),
+              delay(8000),
+            ]);
+
+            logger.info("Successfully navigated to property page");
+          } else {
+            throw new Error(`Could not find property with ID: ${propertyName}`);
           }
         } catch (error) {
           logger.error(`Error finding/clicking property: ${error.message}`);
@@ -578,7 +578,7 @@ async function loginToExpediaPartner(
         for (const chunk of item.idList) {
           logger.info(`Processing id: ${chunk}`);
 
-          const chunkReservations = await processReservationsPage(page, chunk);
+          const chunkReservations = await processReservationsPage(page, chunk, propertyName, propertyName);
           allReservations.push(...chunkReservations);
         }
 
@@ -587,14 +587,47 @@ async function loginToExpediaPartner(
         );
         await delay(5000);
         try {
-          await page.waitForSelector(".tpg-navigation__logo_container", {
+          // Wait for the header to be visible
+          await page.waitForSelector("header.tpg-navigation__header", {
             visible: true,
             timeout: 5000,
           });
-          await page.click(".tpg-navigation__logo_container");
+
+          // Try multiple approaches to click the logo
+          const clicked = await page.evaluate(() => {
+            // Try finding the logo link
+            const logoLink = document.querySelector('header.tpg-navigation__header a.tpg-navigation__logo_container');
+            if (logoLink) {
+              logoLink.click();
+              return true;
+            }
+            return false;
+          });
+
+          if (!clicked) {
+            // If direct click failed, try using the href
+            const href = await page.evaluate(() => {
+              const logoLink = document.querySelector('header.tpg-navigation__header a.tpg-navigation__logo_container');
+              return logoLink ? logoLink.href : null;
+            });
+
+            if (href) {
+              await page.goto(href, { waitUntil: 'networkidle0' });
+            } else {
+              throw new Error('Could not find navigation logo link');
+            }
+          }
+
           await delay(2000); // Wait for navigation
         } catch (error) {
           logger.warn("Could not click navigation logo:", error.message);
+          // Try alternative navigation
+          try {
+            await page.goto('https://apps.expediapartnercentral.com/', { waitUntil: 'networkidle0' });
+            await delay(2000);
+          } catch (navError) {
+            logger.error("Failed to navigate to home page:", navError.message);
+          }
         }
 
         // Add 5 second delay before processing next property
@@ -616,6 +649,8 @@ async function loginToExpediaPartner(
       const workbook = xlsx.utils.book_new();
       const wsData = [
         [
+          "Property ID",
+          "Property Name",
           "Guest Name",
           "Reservation ID",
           "Confirmation Code",
@@ -634,10 +669,11 @@ async function loginToExpediaPartner(
           "Expedia Compensation",
           "Total Payout",
           "Amount to charge/refund",
-          "Reason of charge",
           "Status",
         ],
         ...allReservations.map((res) => [
+          res.propertyId || "N/A",
+          res.propertyName || "N/A",
           res.guestName,
           res.reservationId,
           res.confirmationCode,
@@ -656,7 +692,6 @@ async function loginToExpediaPartner(
           res.expediaCompensation || "N/A",
           res.totalPayout || "N/A",
           res.amountToChargeOrRefund || "N/A",
-          res.reasonOfCharge || "N/A",
           res.status || "Active",
         ]),
       ];
@@ -683,7 +718,7 @@ async function loginToExpediaPartner(
 }
 
 // New function to process reservations on a single page
-async function processReservationsPage(page, id) {
+async function processReservationsPage(page, id, propertyId, propertyName) {
   try {
     try {
       // Wait for the page to be fully loaded
@@ -890,187 +925,6 @@ async function processReservationsPage(page, id) {
                 continue;
               }
 
-              // Check if this is a canceled reservation
-              const isCanceled = await page.evaluate(() => {
-                const dialogTitle = document.querySelector(".fds-dialog-title");
-                return (
-                  dialogTitle &&
-                  (dialogTitle.textContent.includes("Cancelled") ||
-                    dialogTitle.textContent.includes("Canceled"))
-                );
-              });
-
-              if (isCanceled) {
-                logger.info(
-                  "Found canceled reservation, extracting payment information..."
-                );
-                try {
-                  // First, ensure the dialog is visible
-                  await page.waitForSelector(".fds-dialog-header", {
-                    visible: true,
-                    timeout: 5000,
-                  });
-
-                  // Wait for payment summary section to be visible
-                  await page.waitForSelector(".fds-card-header-title", {
-                    visible: true,
-                    timeout: 5000,
-                  });
-
-                  // Extract payment information from canceled reservation
-                  const paymentInfo = await page.evaluate(() => {
-                    const getCurrencyValue = (title) => {
-                      // Find all section titles
-                      const sections = Array.from(
-                        document.querySelectorAll(".sidePanelSectionTitle")
-                      );
-                      const section = sections.find(
-                        (el) => el.textContent.trim() === title
-                      );
-                      if (!section) return "0.00";
-
-                      // Get the currency value from the next cell
-                      const valueCell = section
-                        .closest(".fds-grid")
-                        .querySelector(".fds-currency-value");
-                      return valueCell ? valueCell.textContent.trim() : "0.00";
-                    };
-
-                    return {
-                      cancellationFee: getCurrencyValue("Cancellation fee"),
-                      expediaCompensation: getCurrencyValue(
-                        "Expedia compensation"
-                      ),
-                      totalPayout: getCurrencyValue("Your total payout"),
-                    };
-                  });
-
-                  logger.info(
-                    "Extracted payment info for canceled reservation:",
-                    paymentInfo
-                  );
-
-                  // Add the payment information to the basic data with canceled-specific fields
-                  const canceledReservation = {
-                    ...basicData,
-                    cardNumber: "N/A",
-                    expiryDate: "N/A",
-                    cvv: "N/A",
-                    hasCardInfo: false,
-                    hasPaymentInfo: true,
-                    totalGuestPayment: "0.00",
-                    cancellationFee: paymentInfo.cancellationFee,
-                    expediaCompensation: paymentInfo.expediaCompensation,
-                    totalPayout: paymentInfo.totalPayout,
-                    amountToChargeOrRefund: paymentInfo.cancellationFee,
-                    reasonOfCharge: "Cancellation Fee",
-                    status: "Cancelled",
-                  };
-
-                  pageReservations.push(canceledReservation);
-                  logger.info(
-                    "Added canceled reservation to results:",
-                    canceledReservation
-                  );
-
-                  // Try each closing method sequentially with proper waits and checks
-                  const closingMethods = [
-                    // Method 1: Click the close button using page.click with waitForSelector
-                    async () => {
-                      const closeButton = await page.waitForSelector(
-                        ".fds-dialog-header button.dialog-close",
-                        {
-                          visible: true,
-                          timeout: 2000,
-                        }
-                      );
-                      if (closeButton) {
-                        await closeButton.click();
-                        return true;
-                      }
-                      return false;
-                    },
-                    // Method 2: Use JavaScript click with explicit visibility check
-                    async () => {
-                      const isSuccess = await page.evaluate(() => {
-                        const closeButton = document.querySelector(
-                          ".fds-dialog-header button.dialog-close"
-                        );
-                        if (
-                          closeButton &&
-                          window.getComputedStyle(closeButton).display !==
-                            "none"
-                        ) {
-                          closeButton.click();
-                          return true;
-                        }
-                        return false;
-                      });
-                      return isSuccess;
-                    },
-                    // Method 3: Try alternative close button selector
-                    async () => {
-                      const altCloseButton = await page.$(
-                        '.fds-dialog button[aria-label="Close"]'
-                      );
-                      if (altCloseButton) {
-                        await altCloseButton.click();
-                        return true;
-                      }
-                      return false;
-                    },
-                    // Method 4: Press Escape key as last resort
-                    async () => {
-                      await page.keyboard.press("Escape");
-                      return true;
-                    },
-                  ];
-
-                  // Try each method until one succeeds
-                  let dialogClosed = false;
-                  for (const method of closingMethods) {
-                    try {
-                      const success = await method();
-                      if (success) {
-                        // Wait for dialog to be hidden
-                        await page
-                          .waitForSelector(".fds-dialog-header", {
-                            hidden: true,
-                            timeout: 3000,
-                          })
-                          .catch(() => {});
-
-                        // Double check if dialog is really gone
-                        const dialogStillVisible = await page.$(
-                          ".fds-dialog-header"
-                        );
-                        if (!dialogStillVisible) {
-                          dialogClosed = true;
-                          break;
-                        }
-                      }
-                    } catch (methodError) {
-                      logger.debug(
-                        `Dialog close method failed: ${methodError.message}`
-                      );
-                      continue;
-                    }
-                  }
-
-                  if (!dialogClosed) {
-                    throw new Error("All dialog closing methods failed");
-                  }
-
-                  await delay(1000); // Short stabilization delay
-                  continue; // Skip to next reservation
-                } catch (error) {
-                  logger.warn(
-                    `Warning: Could not close canceled reservation dialog: ${error.message}`
-                  );
-                  continue;
-                }
-              }
-
               // Wait a bit for content to load
               await delay(2000);
 
@@ -1092,81 +946,91 @@ async function processReservationsPage(page, id) {
               let paymentData = null;
               let remainingAmountToCharge = null;
               let amountToRefund = null;
+              let status = "None"; // Default status
+              let additionalText = ""; // New variable to store additional text
               let retries = 0;
-              while (!cardData && !paymentData && retries < 3) {
+              while (retries < 3) {
                 try {
-                  // First try to get card details
-                  cardData = await page.evaluate(() => {
-                    const cardNumber =
-                      document
-                        .querySelector(".cardNumber.replay-conceal bdi")
-                        ?.textContent.trim() || "";
-                    const expiryDate =
-                      document
-                        .querySelector(
-                          ".cardDetails .fds-cell.all-cell-1-4.fds-type-color-primary.replay-conceal"
-                        )
-                        ?.textContent.trim() || "";
-                    const cvv =
-                      document
-                        .querySelectorAll(
-                          ".cardDetails .fds-cell.all-cell-1-4.fds-type-color-primary.replay-conceal"
-                        )[1]
-                        ?.textContent.trim() || "";
-
-                    if (cardNumber) {
+                  // First check for evcCardBase element
+                  const hasEvcCard = await page.evaluate(() => {
+                    const evcCardBase = document.querySelector('.evcCardBase');
+                    if (evcCardBase) {
+                      // Get status badge if it exists
+                      const statusBadge = evcCardBase.querySelector('.fds-grid.statusBadge .fds-badge');
                       return {
-                        cardNumber,
-                        expiryDate,
-                        cvv,
+                        exists: true,
+                        status: statusBadge ? statusBadge.textContent.trim() : 'None'
                       };
                     }
-                    return null;
+                    return { exists: false };
                   });
 
-                  // If no card data, try to get payment information
-                  if (!cardData) {
-                    paymentData = await page.evaluate(() => {
-                      // Find all section titles
-                      const sectionTitles = Array.from(
-                        document.querySelectorAll(".sidePanelSectionTitle")
-                      );
+                  if (hasEvcCard.exists) {
+                    status = hasEvcCard.status;
+                    // Get card details from evcCardBase
+                    cardData = await page.evaluate(() => {
+                      const cardNumber = document.querySelector('.evcCardBase .cardNumber.replay-conceal bdi')?.textContent.trim() || '';
+                      const expiryDate = document.querySelector('.evcCardBase .cardDetails .fds-cell.all-cell-1-4.fds-type-color-primary.replay-conceal')?.textContent.trim() || '';
+                      const cvv = document.querySelectorAll('.evcCardBase .cardDetails .fds-cell.all-cell-1-4.fds-type-color-primary.replay-conceal')[1]?.textContent.trim() || '';
 
-                      // Find the payment sections
-                      const totalGuestPaymentTitle = sectionTitles.find((el) =>
-                        el.textContent.includes("Total guest payment")
-                      );
-                      const expediaCompensationTitle = sectionTitles.find(
-                        (el) => el.textContent.includes("Expedia compensation")
-                      );
-                      const totalPayoutTitle = sectionTitles.find((el) =>
-                        el.textContent.includes("Your total payout")
-                      );
+                      // Get additional text information
+                      const additionalTextElements = Array.from(document.querySelectorAll('.fds-cell.all-y-gutter-12 div, .fds-cell.sidePanelSection, .fds-cell.fds-type-color-attention.fds-grid .fds-cell.all-cell-fill'));
+                      const additionalText = additionalTextElements
+                        .map(el => el.textContent.trim())
+                        .filter(text => text && 
+                          !text.includes('See card activity') && 
+                          !text.includes('contact us') &&
+                          !text.includes('Show contact details'))
+                        .join(' | ');
 
-                      // Get the values
-                      const totalGuestPayment =
-                        totalGuestPaymentTitle?.nextElementSibling
-                          ?.querySelector(".fds-currency-value")
-                          ?.textContent.trim() || "";
-                      const expediaCompensation =
-                        expediaCompensationTitle?.nextElementSibling
-                          ?.querySelector(".fds-currency-value")
-                          ?.textContent.trim() || "";
-                      const totalPayout =
-                        totalPayoutTitle?.nextElementSibling
-                          ?.querySelector(".fds-currency-value")
-                          ?.textContent.trim() || "";
-
-                      if (totalGuestPayment) {
+                      if (cardNumber) {
                         return {
-                          totalGuestPayment,
-                          expediaCompensation,
-                          totalPayout,
+                          cardNumber,
+                          expiryDate,
+                          cvv,
+                          status: status,
+                          additionalText
                         };
                       }
                       return null;
                     });
                   }
+
+                  // Always try to get payment information regardless of card data
+                  paymentData = await page.evaluate(() => {
+                    // Find all payment summary sections
+                    const paymentSummary = document.querySelector('.fds-card-content');
+                    if (!paymentSummary) return null;
+
+                    // Helper function to find value by section title
+                    const findValueByTitle = (titleText) => {
+                      const sections = Array.from(paymentSummary.querySelectorAll('.fds-grid'));
+                      for (const section of sections) {
+                        const title = section.querySelector('.sidePanelSectionTitle');
+                        if (title && title.textContent.trim() === titleText) {
+                          const value = section.querySelector('.fds-currency-value');
+                          return value ? value.textContent.trim() : '';
+                        }
+                      }
+                      return '';
+                    };
+
+                    // Get all payment values
+                    const cancellationFee = findValueByTitle('Cancellation fee');
+                    const expediaCompensation = findValueByTitle('Expedia compensation');
+                    const totalPayout = findValueByTitle('Your total payout');
+                    const totalGuestPayment = findValueByTitle('Total guest payment');
+
+                    if (cancellationFee || expediaCompensation || totalPayout) {
+                      return {
+                        totalGuestPayment,
+                        cancellationFee,
+                        expediaCompensation,
+                        totalPayout,
+                      };
+                    }
+                    return null;
+                  });
 
                   // Extract "Remaining amount to charge" and "Amount to refund"
                   const additionalPaymentInfo = await page.evaluate(() => {
@@ -1215,6 +1079,14 @@ async function processReservationsPage(page, id) {
                       logger.info(`Found Amount to refund: ${amountToRefund}`);
                     }
                   }
+
+                  // Break the loop if we got either card data or payment data
+                  if (cardData || paymentData) {
+                    break;
+                  }
+
+                  retries++;
+                  await delay(1000);
                 } catch (e) {
                   retries++;
                   await delay(1000);
@@ -1231,22 +1103,41 @@ async function processReservationsPage(page, id) {
                 logger.warn("Warning: Could not close dialog normally");
               }
 
-              // Add to reservations array with either card data or payment data
+              // Get property name from the header with more specific selector
+              const propertyInfo = await page.evaluate(() => {
+                // Try multiple selectors to find the property name
+                const selectors = [
+                  '.tpg-navigation__header__dropdown-property-details .fds-dropdown-button-label',
+                  '.tpg-navigation__header__dropdown-property-details button span',
+                  '.tpg-navigation__header__dropdown-property-details',
+                  '.tpg-navigation__header__dropdown-property-details .fds-button2-label'
+                ];
+                
+                for (const selector of selectors) {
+                  const element = document.querySelector(selector);
+                  if (element) {
+                    const text = element.textContent.trim();
+                    if (text && text !== '') {
+                      return text;
+                    }
+                  }
+                }
+                return '';
+              });
+
+              // When adding to pageReservations array, include property info
               pageReservations.push({
                 ...basicData,
                 ...(cardData || {}),
                 ...(paymentData || {}),
+                propertyId: propertyId,
+                propertyName: propertyInfo || propertyName, // Use propertyName as fallback
                 hasCardInfo: !!cardData,
                 hasPaymentInfo: !!paymentData,
                 remainingAmountToCharge: remainingAmountToCharge || "N/A",
                 amountToRefund: amountToRefund || "N/A",
-                amountToChargeOrRefund:
-                  remainingAmountToCharge || amountToRefund || "N/A",
-                reasonOfCharge: remainingAmountToCharge
-                  ? "Remaining Amount to Charge"
-                  : amountToRefund
-                  ? "Amount to Refund"
-                  : "N/A",
+                amountToChargeOrRefund: cardData?.additionalText || remainingAmountToCharge || amountToRefund || "N/A",
+                status: status,
               });
             } catch (error) {
               logger.info(`Error processing reservation: ${error.message}`);
@@ -1259,7 +1150,6 @@ async function processReservationsPage(page, id) {
                   remainingAmountToCharge: "N/A",
                   amountToRefund: "N/A",
                   amountToChargeOrRefund: "N/A",
-                  reasonOfCharge: "N/A",
                 });
               }
             }
