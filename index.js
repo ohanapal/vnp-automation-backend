@@ -578,7 +578,7 @@ async function loginToExpediaPartner(
         for (const chunk of item.idList) {
           logger.info(`Processing id: ${chunk}`);
 
-          const chunkReservations = await processReservationsPage(page, chunk, propertyName, propertyName);
+          const chunkReservations = await processReservationsPage(page, chunk, propertyName, propertyName, browser);
           allReservations.push(...chunkReservations);
         }
 
@@ -668,8 +668,9 @@ async function loginToExpediaPartner(
           "Cancellation Fee",
           "Expedia Compensation",
           "Total Payout",
-          "Amount to charge/refund",
+          "Details",
           "Status",
+          "Amount to charge/refund",
         ],
         ...allReservations.map((res) => [
           res.propertyId || "N/A",
@@ -693,6 +694,7 @@ async function loginToExpediaPartner(
           res.totalPayout || "N/A",
           res.amountToChargeOrRefund || "N/A",
           res.status || "Active",
+          res.amount || "N/A",
         ]),
       ];
 
@@ -718,7 +720,7 @@ async function loginToExpediaPartner(
 }
 
 // New function to process reservations on a single page
-async function processReservationsPage(page, id, propertyId, propertyName) {
+async function processReservationsPage(page, id, propertyId, propertyName, browser) {
   try {
     try {
       // Wait for the page to be fully loaded
@@ -941,6 +943,93 @@ async function processReservationsPage(page, id, propertyId, propertyName) {
               // Wait for content to load after scroll
               await delay(2000);
 
+              // Look for the "See card activity" button and click it in a new tab
+              let remainingBalance = "N/A";
+              try {
+                const seeCardActivityButton = await page.$('.fds-cell.all-y-gutter-16 button.fds-button2.utility.small');
+                
+                if (seeCardActivityButton) {
+                  logger.info("Found 'See card activity' button, clicking it in a new tab...");
+                  
+                  // Get href or onclick URL from the button
+                  const buttonUrl = await page.evaluate(() => {
+                    const button = document.querySelector('.fds-cell.all-y-gutter-16 button.fds-button2.utility.small');
+                    if (!button) return null;
+                    
+                    // Click the button but prevent navigation by returning the URL
+                    const originalOpen = window.open;
+                    let capturedUrl = null;
+                    
+                    // Override window.open temporarily to capture the URL
+                    window.open = (url) => {
+                      capturedUrl = url;
+                      return { focus: () => {} }; // Mock window object
+                    };
+                    
+                    // Simulate click to trigger any onclick handlers
+                    button.click();
+                    
+                    // Restore original window.open
+                    window.open = originalOpen;
+                    
+                    return capturedUrl;
+                  });
+                  
+                  if (buttonUrl) {
+                    logger.info(`Opening card activity URL in new tab: ${buttonUrl}`);
+                    
+                    // Create a new page/tab
+                    const newPage = await browser.newPage();
+                    await newPage.goto(buttonUrl, { waitUntil: 'networkidle0', timeout: 30000 });
+                    
+                    logger.info("New tab opened for card activity");
+                    await delay(5000); // Give more time for the page to fully load
+                    
+                    // Scrape the remaining balance
+                    remainingBalance = await newPage.evaluate(() => {
+                      // Try multiple selectors to find the remaining balance
+                      const selectors = [
+                        '.evc-mock-card-remaining-balance .fds-currency-value',
+                        '.remaining-balance .fds-currency-value',
+                        '[class*="remaining-balance"] .fds-currency-value',
+                        '[class*="balance"] .fds-currency-value',
+                        '.fds-currency-value'
+                      ];
+                      
+                      for (const selector of selectors) {
+                        const elements = document.querySelectorAll(selector);
+                        for (const element of elements) {
+                          // Check if parent contains text about balance
+                          const parent = element.closest('div');
+                          if (parent && parent.textContent.toLowerCase().includes('balance')) {
+                            return element.textContent.trim();
+                          }
+                        }
+                      }
+                      
+                      // If we couldn't find a specific balance element, try to get any currency value
+                      const anyBalance = document.querySelector('.fds-currency-value');
+                      return anyBalance ? anyBalance.textContent.trim() : "N/A";
+                    });
+                    
+                    logger.info(`Scraped remaining balance: ${remainingBalance}`);
+                    
+                    // Take screenshot for debugging if needed
+                    await newPage.screenshot({ path: 'card-activity.png' });
+                    
+                    // Close the new tab
+                    await newPage.close();
+                    logger.info("Closed card activity tab");
+                  } else {
+                    logger.info("Could not capture URL from 'See card activity' button, skipping");
+                  }
+                } else {
+                  logger.info("'See card activity' button not found, skipping");
+                }
+              } catch (error) {
+                logger.warn(`Error processing card activity: ${error.message}`);
+              }
+
               // Get card details with retry mechanism
               let cardData = null;
               let paymentData = null;
@@ -1138,6 +1227,7 @@ async function processReservationsPage(page, id, propertyId, propertyName) {
                 amountToRefund: amountToRefund || "N/A",
                 amountToChargeOrRefund: cardData?.additionalText || remainingAmountToCharge || amountToRefund || "N/A",
                 status: status,
+                amount: remainingBalance,
               });
             } catch (error) {
               logger.info(`Error processing reservation: ${error.message}`);
@@ -1212,11 +1302,44 @@ app.get("/api/data", (req, res) => {
     const data = JSON.parse(
       fs.readFileSync(path.join(__dirname, "data.json"), "utf8")
     );
-    res.json(data);
+    
+    // Filter logs from the last hour
+    const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000);
+    const filteredLogs = data.logs.filter(log => {
+      return new Date(log.timestamp) > oneHourAgo;
+    });
+    
+    res.json({ logs: filteredLogs });
   } catch (error) {
     res.status(500).json({ error: "Error reading logs" });
   }
 });
+
+// Function to cleanup old logs (older than 1 hour)
+function cleanupOldLogs() {
+  try {
+    const filePath = path.join(__dirname, "data.json");
+    
+    // Read current data
+    const data = JSON.parse(fs.readFileSync(filePath, "utf8"));
+    
+    // Filter logs from the last hour
+    const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000);
+    const filteredLogs = data.logs.filter(log => {
+      return new Date(log.timestamp) > oneHourAgo;
+    });
+    
+    // Write filtered data back to file
+    fs.writeFileSync(filePath, JSON.stringify({ logs: filteredLogs }, null, 2));
+    
+    logger.info(`Cleaned up logs: Removed ${data.logs.length - filteredLogs.length} old entries`);
+  } catch (error) {
+    logger.error(`Error cleaning up logs: ${error.message}`);
+  }
+}
+
+// Run cleanup every 15 minutes
+setInterval(cleanupOldLogs, 15 * 60 * 1000);
 
 // Watch for JSON file changes
 fs.watch(path.join(__dirname, "data.json"), () => {
@@ -1300,6 +1423,10 @@ app.get("/api/expedia", async (req, res) => {
 // Start the Express server
 server.listen(port, () => {
   logger.info(`Server running at http://localhost:${port}`);
+  
+  // Run cleanup immediately when server starts
+  cleanupOldLogs();
+  
   if (!loadToken()) {
     logger.info("Opening browser for authentication...");
     open(`http://localhost:${port}/auth`);
